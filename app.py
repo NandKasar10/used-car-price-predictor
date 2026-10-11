@@ -1,82 +1,91 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
+import os
 import pickle
 
-st.set_page_config(page_title="Used Car Price Predictor", page_icon="🚘", layout="centered")
+import numpy as np
+import pandas as pd
+import streamlit as st
 
-# --- Load the Model and Maps ---
+st.set_page_config(page_title="Used Car Price Predictor", page_icon="🚗")
+
+# ------------------------------------------------------------------
+# Load the saved model (cached, so it loads only once)
+# ------------------------------------------------------------------
+MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "car_price_model.pkl")
+
+
 @st.cache_resource
 def load_model():
-    with open('models/car_price_model.pkl', 'rb') as file:
+    with open(MODEL_PATH, "rb") as file:
         data = pickle.load(file)
-    # Yahan naya brand_model_map bhi load kar rahe hain
-    return data['model'], data['columns'], data['top_cars'], data['brand_model_map']
+    return data["model"], data["columns"], data["top_cars"], data["brand_model_map"]
+
 
 model, model_columns, top_cars, brand_model_map = load_model()
 
-# --- UI Header ---
-st.title("🚘 Used Car Price Predictor")
-st.markdown("Enter your car details below to get an estimated selling price based on Machine Learning.")
-st.markdown("---")
+# same mapping that was used while training
+owner_map = {
+    "First Owner": 1,
+    "Second Owner": 2,
+    "Third Owner": 3,
+    "Fourth & Above Owner": 4,
+    "Test Drive Car": 0,
+}
 
-# --- User Inputs ---
+# ------------------------------------------------------------------
+# User interface
+# ------------------------------------------------------------------
+st.title("🚗 Used Car Price Predictor")
+st.caption("Machine learning model (XGBoost) trained on historical used-car listings")
+
 col1, col2 = st.columns(2)
 
 with col1:
-    # DYNAMIC DROPDOWNS:
-    # 1. Pehle Brand select karo (Alphabetical order me)
-    brand_list = sorted(list(brand_model_map.keys()))
+    brand_list = sorted(brand_model_map.keys())
     brand = st.selectbox("Car Brand", options=brand_list)
-    
-    # 2. Jo Brand select hua hai, sirf uske models show karo
+
+    # the model list depends on the selected brand
     model_list = brand_model_map[brand]
     car_model_name = st.selectbox("Car Model", options=model_list)
-    
-    year = st.slider("Manufacturing Year", 2005, 2026, 2018)
-    km_driven = st.number_input("Kilometers Driven", min_value=0, max_value=500000, value=45000, step=1000)
+
+    year = st.slider("Manufacturing Year", min_value=2005, max_value=2026, value=2018)
+    km_driven = st.number_input("Kilometers Driven", min_value=0, max_value=300000, value=50000, step=1000)
 
 with col2:
     fuel = st.selectbox("Fuel Type", ["Petrol", "Diesel", "CNG", "LPG", "Electric"])
     seller_type = st.selectbox("Seller Type", ["Individual", "Dealer", "Trustmark Dealer"])
     transmission = st.selectbox("Transmission", ["Manual", "Automatic"])
-    owner_str = st.selectbox("Previous Owners", ["First Owner", "Second Owner", "Third Owner", "Fourth & Above Owner", "Test Drive Car"])
+    owner_str = st.selectbox("Owner", list(owner_map.keys()))
 
-# --- Prediction Logic ---
-if st.button("Predict Selling Price", type="primary", use_container_width=True):
-    
+# ------------------------------------------------------------------
+# Prediction
+# ------------------------------------------------------------------
+if st.button("Predict Price"):
+    # 1. same feature engineering as in the notebook
     car_age = 2026 - year
-    
-    owner_map = {
-        'First Owner': 1, 'Second Owner': 2, 'Third Owner': 3,
-        'Fourth & Above Owner': 4, 'Test Drive Car': 0
-    }
     owner_val = owner_map[owner_str]
 
-    # Brand aur Model ko wapas jod kar string banaya
     brand_model_combined = f"{brand} {car_model_name}"
-    
     if brand_model_combined not in top_cars:
-        brand_model_combined = 'Other'
+        brand_model_combined = "Other"
 
-    input_dict = {
-        'km_driven': [km_driven],
-        'owner': [owner_val],
-        'car_age': [car_age],
-        'brand_model': [brand_model_combined],
-        'fuel': [fuel],
-        'seller_type': [seller_type],
-        'transmission': [transmission]
-    }
-    input_df = pd.DataFrame(input_dict)
+    # 2. one-row table with the same columns as the training data
+    input_df = pd.DataFrame({
+        "km_driven": [km_driven],
+        "owner": [owner_val],
+        "car_age": [car_age],
+        "brand_model": [brand_model_combined],
+        "fuel": [fuel],
+        "seller_type": [seller_type],
+        "transmission": [transmission],
+    })
 
-    input_encoded = pd.get_dummies(input_df, columns=['brand_model', 'fuel', 'seller_type', 'transmission'])
+    # 3. one-hot encode, then force the exact training columns (missing ones become 0)
+    input_encoded = pd.get_dummies(input_df, columns=["brand_model", "fuel", "seller_type", "transmission"])
     input_final = input_encoded.reindex(columns=model_columns, fill_value=0)
 
+    # 4. predict (log scale) and convert back to rupees
     predicted_log_price = model.predict(input_final)[0]
-    
-    # Log to real Rupees conversion
-    prediction = np.expm1(predicted_log_price) 
+    prediction = np.expm1(predicted_log_price)
 
-    st.success(f"### 🏷️ Estimated Selling Price: ₹ {prediction:,.2f}")
-    st.caption("Note: This prediction is generated by our XGBoost Model.")
+    st.success(f"### Estimated Selling Price: Rs {prediction:,.0f}")
+    st.caption("This is an estimate based on historical listings, not an exact market price.")
